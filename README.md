@@ -42,9 +42,9 @@ sequenceDiagram
 
 ## 🛠 Tech Stack
 
-- **Java**: 17+
-- **Framework**: Spring Boot 3.x
-- **Architecture**: Spring Modulith
+- **Java**: 25
+- **Framework**: Spring Boot 4.0
+- **Architecture**: Spring Modulith 2.0
 - **Database**: H2 (In-memory), Spring Data JPA
 - **Build Tool**: Gradle (Kotlin DSL)
 - **Testing**: JUnit 5, AssertJ, Awaitility (비동기 테스트), Spring Modulith Test
