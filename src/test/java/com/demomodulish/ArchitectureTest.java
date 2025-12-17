@@ -19,9 +19,9 @@ class ArchitectureTest {
 
         // 3. [추가] 특정 모듈이 존재하는지 강제로 확인 (TDD: 이게 없으면 실패함)
         boolean hasOrder = modules.stream()
-                .anyMatch(module -> module.getIdentifier().equals("order"));
+                .anyMatch(module -> module.getIdentifier().toString().equals("order"));
         boolean hasInventory = modules.stream()
-                .anyMatch(module -> module.getIdentifier().equals("inventory"));
+                .anyMatch(module -> module.getIdentifier().toString().equals("inventory"));
 
         if (!hasOrder || !hasInventory) {
             throw new AssertionError("❌ 필수 모듈(order, inventory)이 아직 생성되지 않았습니다!");

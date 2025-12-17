@@ -1,14 +1,17 @@
 package com.demomodulish.inventory;
 
-import module java.base;
 import com.demomodulish.common.InventoryFailedEvent;
 import com.demomodulish.common.InventoryVerifiedEvent;
 import com.demomodulish.common.OrderCompletedEvent;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.modulith.events.ApplicationModuleListener;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+
+import java.time.LocalDateTime;
+import java.util.List;
 
 /**
  * 재고 관리 서비스
@@ -34,6 +37,7 @@ class InventoryService {
      *    재고 부족으로 예외가 발생하여 롤백되더라도, 상위(주문) 트랜잭션에 직접적인 영향을 주지 않고
      *    별도의 실패 이벤트(InventoryFailedEvent)를 통해 보상 로직을 트리거합니다.
      */
+    @Async
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     @ApplicationModuleListener
     public void on(OrderCompletedEvent event) {
