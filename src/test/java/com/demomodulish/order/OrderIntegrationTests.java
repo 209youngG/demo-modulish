@@ -17,7 +17,7 @@ class OrderIntegrationTests {
     @Test
     void shouldPersistOrderAndPublishEvent(AssertablePublishedEvents events) {
         // Given
-        var order = new Order("PRODUCT-123", 2);
+        var order = new Order("PRODUCT-123", 2, 1000);
 
         // When
         orderManagement.place(order);

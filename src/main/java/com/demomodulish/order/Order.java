@@ -1,6 +1,8 @@
 package com.demomodulish.order;
 
 import jakarta.persistence.*;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
 import lombok.Getter;
 
 import java.util.UUID;
@@ -12,18 +14,30 @@ public class Order {
 
     @Id
     private String id = UUID.randomUUID().toString();
+
+    @NotBlank
     private String productId;
+    
+    @Min(1)
     private int quantity;
+    
+    @Min(0)
+    private long price;
 
     @Enumerated(EnumType.STRING)
-    private OrderStatus status; // 상태 필드 추가
+    private OrderStatus status;
 
     protected Order() {}
 
-    public Order(String productId, int quantity) {
+    public Order(String productId, int quantity, long price) {
         this.productId = productId;
         this.quantity = quantity;
-        this.status = OrderStatus.PENDING; // 기본값은 대기
+        this.price = price;
+        this.status = OrderStatus.PENDING;
+    }
+
+    public long getTotalAmount() {
+        return this.price * this.quantity;
     }
 
     public void cancel() {

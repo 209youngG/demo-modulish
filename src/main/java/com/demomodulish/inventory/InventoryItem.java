@@ -23,14 +23,15 @@ public class InventoryItem {
         this.expirationDate = expirationDate;
     }
 
-    protected InventoryItem() {
+    protected InventoryItem() {}
 
-    }
-
-    // 비즈니스 로직: 수량 차감
     public int decrease(int amount) {
         int deducated = Math.min(this.quantity, amount);
         this.quantity -= deducated;
-        return deducated; // 실제 차감된 수량 반환
+        return deducated;
+    }
+
+    public void increase(int amount) {
+        this.quantity += amount;
     }
 }

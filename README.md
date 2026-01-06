@@ -15,28 +15,29 @@
 ```mermaid
 sequenceDiagram
     participant User
-    participant OrderModule as [Order]
-    participant EventBus
-    participant InventoryModule as [Inventory]
+    participant Order
+    participant Inventory
+    participant Payment
 
-    User->>OrderModule: 주문 요청 (place order)
-    OrderModule->>OrderModule: 주문 저장 (PENDING)
-    OrderModule->>EventBus: OrderCompletedEvent 발행
-    
-    Note over EventBus: Transaction Phase: AFTER_COMMIT
-    
-    EventBus->>InventoryModule: 이벤트 수신 (Async/New Tx)
-    InventoryModule->>InventoryModule: 재고 조회 (Lock) & 유통기한 체크
-    
-    alt 재고 충분
-        InventoryModule->>InventoryModule: 재고 차감
-        InventoryModule->>EventBus: InventoryVerifiedEvent 발행
-        EventBus->>OrderModule: 이벤트 수신
-        OrderModule->>OrderModule: 주문 상태 변경 (COMPLETED)
-    else 재고 부족 / 유통기한 만료
-        InventoryModule->>EventBus: InventoryFailedEvent 발행
-        EventBus->>OrderModule: 이벤트 수신
-        OrderModule->>OrderModule: 주문 취소 처리 (CANCELLED)
+    User->>Order: 1. 주문 생성 (가격 포함)
+    Order->>Inventory: 2. 이벤트 발행 (OrderPlaced)
+
+    Inventory->>Inventory: 3. 재고 차감 (Lock)
+
+    alt 재고 부족
+        Inventory-->>Order: 실패 이벤트 -> 주문 취소
+    else 재고 확보 성공
+        Inventory->>Payment: 4. 이벤트 발행 (InventoryVerified)
+
+        Payment->>Payment: 5. 결제 시도
+
+        alt 결제 성공
+            Payment->>Order: 6. 성공 이벤트 (PaymentCompleted)
+            Order->>Order: 7. 주문 최종 완료 (COMPLETED)
+        else 결제 실패 (잔액 부족 등)
+            Payment->>Order: 실패 이벤트 (PaymentFailed) -> 주문 취소
+            Payment->>Inventory: 실패 이벤트 (PaymentFailed) -> 재고 복구 (보상 트랜잭션)
+        end
     end
 ```
 

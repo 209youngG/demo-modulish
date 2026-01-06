@@ -3,86 +3,159 @@ package com.demomodulish.inventory;
 import com.demomodulish.common.InventoryFailedEvent;
 import com.demomodulish.common.InventoryVerifiedEvent;
 import com.demomodulish.common.OrderCompletedEvent;
+import com.demomodulish.common.PaymentFailedEvent;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.dao.ConcurrencyFailureException;
 import org.springframework.modulith.events.ApplicationModuleListener;
+import org.springframework.retry.annotation.Backoff;
+import org.springframework.retry.annotation.Retryable;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
-/**
- * 재고 관리 서비스
- * <p>주문 완료 이벤트를 수신하여 재고를 차감하거나, 재고 부족 시 보상 트랜잭션을 유발하는 이벤트를 발행합니다.</p>
- */
+@Slf4j
 @Service
 class InventoryService {
 
     private final InventoryRepository inventoryRepository;
-    private final ApplicationEventPublisher events; // 이벤트 발행기 추가
+    private final InventoryTransactionRepository inventoryTransactionRepository;
+    private final ApplicationEventPublisher events;
 
-    InventoryService(InventoryRepository inventoryRepository, ApplicationEventPublisher events) {
+    InventoryService(InventoryRepository inventoryRepository,
+                     InventoryTransactionRepository inventoryTransactionRepository,
+                     ApplicationEventPublisher events) {
         this.inventoryRepository = inventoryRepository;
+        this.inventoryTransactionRepository = inventoryTransactionRepository;
         this.events = events;
     }
 
+    @Async
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    @Retryable(
+            retryFor = {ConcurrencyFailureException.class},
+            maxAttempts = 3,
+            backoff = @Backoff(delay = 100)
+    )
+    @ApplicationModuleListener
+    public void on(OrderCompletedEvent event) {
+        if (inventoryTransactionRepository.existsById(event.orderId())) {
+            log.info("✋ [Inventory] 이미 처리된 주문입니다. (Idempotency check): {}", event.orderId());
+            return;
+        }
 
-    /**
-     * 주문 완료(OrderCompletedEvent) 이벤트를 수신하여 재고 차감 로직을 수행합니다.
-     * <p>
-     * 1. {@code @ApplicationModuleListener}: Spring Modulith 이벤트를 구독합니다.
-     * 2. {@code Propagation.REQUIRES_NEW}: 주문 트랜잭션과 분리된 별도의 트랜잭션에서 실행됩니다.
-     *    재고 부족으로 예외가 발생하여 롤백되더라도, 상위(주문) 트랜잭션에 직접적인 영향을 주지 않고
-     *    별도의 실패 이벤트(InventoryFailedEvent)를 통해 보상 로직을 트리거합니다.
-     */
+        DeductionResult result = deductInventory(event);
+        recordTransaction(event.orderId());
+
+        if (result.isFailure()) {
+            publishFailure(event, result.getReason());
+        } else {
+            publishSuccess(event, result.getDeductedBatches(), result.getRequestedQuantity());
+        }
+    }
+
     @Async
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     @ApplicationModuleListener
-    public void on(OrderCompletedEvent event) {
+    public void on(PaymentFailedEvent event) {
+        log.info("🔄 [Inventory] 결제 실패로 인한 재고 복구 수행: {}", event.orderId());
+        event.deductedBatches().forEach((batchId, quantity) -> inventoryRepository.findById(batchId)
+                .ifPresent(item -> item.increase(quantity)));
+    }
+
+    private DeductionResult deductInventory(OrderCompletedEvent event) {
         String productId = event.productId();
         int requestedQuantity = event.quantity();
-
-        // 1. 🔒 락 걸고 데이터 가져오기 (다른 트랜잭션 대기)
         List<InventoryItem> batches = inventoryRepository.findAllByProductIdWithLock(productId);
+        LocalDateTime now = LocalDateTime.now();
 
-        // 2. 차감 가능한지 계산
+        int totalAvailable = calculateAvailableQuantity(batches, now);
+
+        if (totalAvailable < requestedQuantity) {
+            return DeductionResult.failure("유효 재고 부족 (요청: %d, 가능: %d)".formatted(requestedQuantity, totalAvailable));
+        }
+
+        return performDeduction(batches, now, requestedQuantity);
+    }
+
+    private int calculateAvailableQuantity(List<InventoryItem> batches, LocalDateTime now) {
+        return batches.stream()
+                .filter(b -> !b.getExpirationDate().isBefore(now))
+                .mapToInt(InventoryItem::getQuantity)
+                .sum();
+    }
+
+    private DeductionResult performDeduction(List<InventoryItem> batches, LocalDateTime now, int requestedQuantity) {
         int remainToDeduct = requestedQuantity;
+        Map<String, Integer> deductedBatches = new HashMap<>();
 
-        // 3. 유통기한 빠른 순으로 순회하며 차감 시도
         for (InventoryItem batch : batches) {
-            // ❌ 유통기한 지난 건 건너뛰기
-            if (batch.getExpirationDate().isBefore(LocalDateTime.now())) {
-                System.out.println("🚨 [Inventory] 실패: " + batch.getId() + " / " + batch.getProductId() + " -> 유통기한 지남");
+            if (batch.getExpirationDate().isBefore(now)) {
                 continue;
             }
 
-            // 실제 객체 상태 변경 (Dirty Checking으로 나중에 자동 저장됨)
             int deducted = batch.decrease(remainToDeduct);
+            if (deducted > 0) {
+                deductedBatches.put(batch.getId(), deducted);
+            }
             remainToDeduct -= deducted;
-
-            System.out.println("LOG: 아이템 ID(" + batch.getId() + ")에서 " + deducted + "개 차감됨. (유통기한: " + batch.getExpirationDate() + ")");
-
-            if (remainToDeduct == 0) break; // 다 뺐으면 중단
+            if (remainToDeduct == 0) {
+                break;
+            }
         }
 
-        // 4. 결과 확인 및 실패 처리
-        if (remainToDeduct > 0) {
-            // 1. 실패 이벤트 발행 (주문 취소를 위해)
-            publishFailure(event, "유효 재고 부족");
+        return DeductionResult.success(deductedBatches, requestedQuantity);
+    }
 
-            // 2. 🔥 중요: 강제 예외 발생 -> 트랜잭션 롤백 -> 배치 A에서 깠던 수량 원상복구
-            throw new IllegalStateException("재고 부족으로 인한 롤백 처리");
-        }
+    private void recordTransaction(String orderId) {
+        inventoryTransactionRepository.save(new InventoryTransaction(orderId, LocalDateTime.now()));
+    }
 
-        // 여기까지 오면 트랜잭션 커밋되면서 변경된 수량이 DB에 반영됨 ✅
-        System.out.println("🏭 [Inventory] 총 " + requestedQuantity + "개 차감 완료");
-        events.publishEvent(new InventoryVerifiedEvent(event.orderId()));
+    private void publishSuccess(OrderCompletedEvent event, Map<String, Integer> deductedBatches, int quantity) {
+        log.info("🏭 [Inventory] 총 {}개 차감 완료", quantity);
+        events.publishEvent(new InventoryVerifiedEvent(
+                event.orderId(),
+                event.totalAmount(),
+                event.productId(),
+                event.quantity(),
+                deductedBatches
+        ));
     }
 
     private void publishFailure(OrderCompletedEvent event, String reason) {
-        System.out.println("🚨 [Inventory] 실패: " + reason + " -> 주문 취소 요청");
+        log.info("🚨 [Inventory] 실패: {} -> 주문 취소 요청", reason);
         events.publishEvent(new InventoryFailedEvent(event.orderId(), reason));
+    }
+
+    private record DeductionResult(Map<String, Integer> deductedBatches, int requestedQuantity, String reason, boolean isFailure) {
+        static DeductionResult success(Map<String, Integer> deductedBatches, int requestedQuantity) {
+            return new DeductionResult(deductedBatches, requestedQuantity, null, false);
+        }
+
+        static DeductionResult failure(String reason) {
+            return new DeductionResult(Map.of(), 0, reason, true);
+        }
+
+        public boolean isFailure() {
+            return isFailure;
+        }
+
+        public String getReason() {
+            return reason;
+        }
+
+        public Map<String, Integer> getDeductedBatches() {
+            return deductedBatches;
+        }
+
+        public int getRequestedQuantity() {
+            return requestedQuantity;
+        }
     }
 }

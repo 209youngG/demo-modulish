@@ -28,7 +28,7 @@ class InventoryIntegrationTests {
 
         // 2. When: 11개 주문 (10개 배치에서 다 까고, 다음 배치에서 1개 까야 함)
         // 3. Then: 총 재고가 19개가 되어야 함 (30 - 11 = 19)
-        scenario.publish(new OrderCompletedEvent("ORD-001", "PRODUCT-123", 11))
+        scenario.publish(new OrderCompletedEvent("ORD-001", "PRODUCT-123", 11, 11000L))
                 .andWaitForStateChange(() -> {
                     // 검증 로직
                     int totalQuantity = inventoryRepository.findAllByProductId("PRODUCT-123")
@@ -53,7 +53,7 @@ class InventoryIntegrationTests {
         inventoryRepository.save(new InventoryItem("OUT-OF-STOCK-ITEM", 1, LocalDateTime.now().plusDays(1)));
 
         // When: 2개 주문 발생 -> (재고 부족) -> 실패 이벤트 발행
-        scenario.publish(new OrderCompletedEvent("ORD-FAIL-1", "OUT-OF-STOCK-ITEM", 2))
+        scenario.publish(new OrderCompletedEvent("ORD-FAIL-1", "OUT-OF-STOCK-ITEM", 2, 2000L))
                 .andWaitForEventOfType(InventoryFailedEvent.class) // 1. 실패 이벤트가 나오는지 확인
                 .matching(event -> event.orderId().equals("ORD-FAIL-1"))
                 .toArrive();
